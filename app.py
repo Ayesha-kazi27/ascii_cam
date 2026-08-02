@@ -112,10 +112,10 @@ class MainWindow (QMainWindow):
         #ascii wala filter ka button
         ascii = QPushButton('ASCII')
         layoutlvl3.addWidget(ascii)
-        ascii.setFixedSize(50, 50)
+        ascii.setFixedSize(60, 60)
         ascii.setStyleSheet("""
         QPushButton {
-            border-radius: 25px; 
+            border-radius: 30px; 
             background-color: #03C03C;
             border: 2px solid #00FF00;
             color: black;
@@ -132,10 +132,10 @@ class MainWindow (QMainWindow):
         #vintage filter ka apply  yaha
         vintage = QPushButton('vintage')
         layoutlvl3.addWidget(vintage)
-        vintage.setFixedSize(50, 50)
+        vintage.setFixedSize(60, 60)
         vintage.setStyleSheet("""
         QPushButton {
-            border-radius: 25px; 
+            border-radius: 30px; 
             background-color: #03C03C;
             border: 2px solid #00FF00;
             color: black;
@@ -152,10 +152,10 @@ class MainWindow (QMainWindow):
         #braille filter ka button
         braille = QPushButton('Braille')
         layoutlvl3b.addWidget(braille)
-        braille.setFixedSize(50, 50)
+        braille.setFixedSize(60, 60)
         braille.setStyleSheet("""
         QPushButton {
-            border-radius: 25px; 
+            border-radius: 30px; 
             background-color: #03C03C;
             border: 2px solid #00FF00;
             color: black;
@@ -172,10 +172,10 @@ class MainWindow (QMainWindow):
         #dreamy filter ka button
         dreamy = QPushButton('Dreamy')
         layoutlvl3b.addWidget(dreamy)
-        dreamy.setFixedSize(50, 50)
+        dreamy.setFixedSize(60, 60)
         dreamy.setStyleSheet("""
         QPushButton {
-            border-radius: 25px; 
+            border-radius: 30px; 
             background-color: #03C03C;
             border: 2px solid #00FF00;
             color: black;
@@ -215,10 +215,10 @@ class MainWindow (QMainWindow):
         #sketchy (b&w) filter ka button
         sketchy = QPushButton('Sketchy')
         layoutlvl3.addWidget(sketchy)
-        sketchy.setFixedSize(50, 50)
+        sketchy.setFixedSize(60, 60)
         sketchy.setStyleSheet("""
         QPushButton {
-            border-radius: 25px; 
+            border-radius: 30px; 
             background-color: #03C03C;
             border: 2px solid #00FF00;
             color: black;
