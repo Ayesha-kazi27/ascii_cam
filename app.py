@@ -1,9 +1,8 @@
 from PySide6.QtWidgets import *
-from PySide6.QtCore import Qt,QThread,Signal,Slot
-from PySide6.QtGui import QImage
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtGui import QImage, QPixmap, QKeySequence
 from heartbutton import HeartButton
-import cv2,sys,os,time
+import cv2, sys, os, time
 from ascii_magic import AsciiArt
 from pathlib import Path
 from selenium import webdriver
@@ -17,6 +16,7 @@ class Camera(QThread):
         super().__init__()
         self.running = True
         self.current_mode = "normal"
+        self.latest_frame = None  # init before run() so it exists even before first frame
     def run(self):
         cam = cv2.VideoCapture(0)
         while self.running:
@@ -48,6 +48,11 @@ class MainWindow (QMainWindow):
 
         self.msg = False
         self.current_mode = "normal"
+
+        # upload/paste state - jab ye True hoga, live camera feed ignore hoga
+        # aur filters is uploaded_frame pe apply honge instead of live cam
+        self.uploaded_frame = None
+        self.using_upload = False
 
         container = QWidget()
         self.setCentralWidget(container)
@@ -141,64 +146,106 @@ class MainWindow (QMainWindow):
         self.cam_thread = Camera()
         self.cam_thread.frame_ready.connect(self.update_camera_view)
         self.cam_thread.start()
+
+        # focus chahiye taaki Ctrl+V key events window ko mile
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    # ---------- helpers (reused by camera feed, upload, paste, save) ----------
+
+    def apply_vintage(self, frame_bgr):
+        """frame_bgr -> sepia frame_bgr, using mahotas"""
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        contiguous_rgb = np.ascontiguousarray(rgb)
+        sepia_floats = mh.colors.rgb2sepia(contiguous_rgb)
+        sepia_uint8 = np.clip(sepia_floats, 0, 255).astype(np.uint8)
+        return cv2.cvtColor(sepia_uint8, cv2.COLOR_RGB2BGR)
+
+    def display_frame(self, frame_bgr):
+        """show a bgr numpy frame on camlabel"""
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        contiguous_rgb = np.ascontiguousarray(rgb)
+        h, w, ch = contiguous_rgb.shape
+        bytes_per_line = ch * w
+        qt_image = QImage(
+            contiguous_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
+        ).copy()
+        scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
+            self.camlabel.width(),
+            self.camlabel.height(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.camlabel.setPixmap(scaled_pixmap)
+
+    def refresh_display(self):
+        """redraw whatever the current active source is (only needed when
+        the live camera thread isn't the one driving the label, i.e. upload mode)"""
+        if self.msg:
+            return
+        if self.using_upload and self.uploaded_frame is not None:
+            frame = self.uploaded_frame.copy()
+            if self.current_mode == "vintage":
+                try:
+                    frame = self.apply_vintage(frame)
+                except Exception as e:
+                    print("Vintage on uploaded image error:", e)
+            self.display_frame(frame)
+
+    def get_current_source_frame(self):
+        """returns the frame filters/save should act on: uploaded image if
+        one is active, otherwise the live camera's latest frame"""
+        if self.using_upload and self.uploaded_frame is not None:
+            return self.uploaded_frame.copy()
+        elif self.cam_thread.latest_frame is not None:
+            return self.cam_thread.latest_frame.copy()
+        return None
+
+    def qimage_to_bgr(self, qimage):
+        """convert a QImage (e.g. from clipboard) into an opencv BGR numpy array"""
+        qimage = qimage.convertToFormat(QImage.Format.Format_RGB888)
+        width = qimage.width()
+        height = qimage.height()
+        bytes_per_line = qimage.bytesPerLine()
+        buf = qimage.constBits()
+        arr = np.frombuffer(buf, dtype=np.uint8, count=height * bytes_per_line)
+        arr = arr.reshape((height, bytes_per_line))[:, :width * 3].reshape((height, width, 3))
+        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        return np.ascontiguousarray(bgr)
+
+    # ---------------------------------------------------------------------
+
     @Slot(QImage)
     def update_camera_view(self, qt_image):
-        if not self.msg:
-            if self.current_mode == "vintage" and self.cam_thread.latest_frame is not None:
-                try:
-                    
-                    current = self.cam_thread.latest_frame.copy()
-                    rgb_current = cv2.cvtColor(current, cv2.COLOR_BGR2RGB)
-                    
-                    contiguous_rgb = np.ascontiguousarray(rgb_current)
-                    sepia_floats = mh.colors.rgb2sepia(contiguous_rgb)
-                    sepia_uint8 = np.clip(sepia_floats, 0, 255).astype(np.uint8)
-                    
-                    h, w, ch = sepia_uint8.shape
-                    bytes_per_line = ch * w
-                    raw_bytes = sepia_uint8.tobytes()
-                    
-                    qt_image = QImage(
-                        raw_bytes, 
-                        w, 
-                        h, 
-                        bytes_per_line, 
-                        QImage.Format.Format_RGB888
-                    ).copy()
-                except Exception as e:
-                    print("Live vintage calculation error:", e)
-            scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
+        # jab upload/paste wali image active hai, live cam feed ko ignore karo
+        if self.msg or self.using_upload:
+            return
+        if self.current_mode == "vintage" and self.cam_thread.latest_frame is not None:
+            try:
+                frame = self.apply_vintage(self.cam_thread.latest_frame.copy())
+                self.display_frame(frame)
+                return
+            except Exception as e:
+                print("Live vintage calculation error:", e)
+        scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
             self.camlabel.width(), 
             self.camlabel.height(), 
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
-            )
-            self.camlabel.setPixmap(scaled_pixmap)
+        )
+        self.camlabel.setPixmap(scaled_pixmap)
+
     #cutu heart button
     def click_act(self):
-        if self.cam_thread.latest_frame is not None:
+        frame_to_save = self.get_current_source_frame()
+        if frame_to_save is not None:
             try:
-                
                 filename = f"capture_{int(time.time())}.png"
-                
-                
-                frame_to_save = self.cam_thread.latest_frame.copy()
-                
+
                 if self.current_mode == "vintage":
-                    
-                    rgb_format = cv2.cvtColor(frame_to_save, cv2.COLOR_BGR2RGB)
-                    contiguous_rgb = np.ascontiguousarray(rgb_format)
-                    
-                    # Apply Mahotas lib ka thing
-                    sepia_floats = mh.colors.rgb2sepia(contiguous_rgb)
-                    sepia_uint8 = np.clip(sepia_floats, 0, 255).astype(np.uint8)
-                    
-                    # Conversion for cv
-                    frame_to_save = cv2.cvtColor(sepia_uint8, cv2.COLOR_RGB2BGR)
+                    frame_to_save = self.apply_vintage(frame_to_save)
                     print(f"Applying vintage filter")
 
                 cv2.imwrite(filename, frame_to_save)
-                
 
                 self.camlabel.clear()
                 self.camlabel.setText(f"Snapshot Saved Successfully!\n\n📄 {filename}\n\n(Click anywhere to resume)")
@@ -211,19 +258,58 @@ class MainWindow (QMainWindow):
                 filepath = Path(filename).resolve().as_uri()
                 driver.get(filepath)
                 time.sleep(5)
-                driver.quite()
+                driver.quit()
                 
             except Exception as e:
                 print("Error saving image snapshot:", e)
+
     #upload button functionality
     def upload_act(self):
-        pass
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Upload Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
+        )
+        if not filename:
+            return
+        frame = cv2.imread(filename)
+        if frame is None:
+            QMessageBox.warning(self, "Upload Error", "Could not load that image.")
+            return
+        self.uploaded_frame = frame
+        self.using_upload = True
+        self.msg = False
+        self.camlabel.setStyleSheet("background-color: #121212; color: white")
+        self.refresh_display()
+        print(f"Uploaded image loaded: {filename}")
+
+    #ctrl+v paste functionality
+    def paste_image(self):
+        clipboard = QApplication.clipboard()
+        qimg = clipboard.image()
+        if qimg.isNull():
+            print("Clipboard has no image to paste.")
+            return
+        try:
+            frame = self.qimage_to_bgr(qimg)
+            self.uploaded_frame = frame
+            self.using_upload = True
+            self.msg = False
+            self.camlabel.setStyleSheet("background-color: #121212; color: white")
+            self.refresh_display()
+            print("Pasted image from clipboard.")
+        except Exception as e:
+            print("Error pasting image:", e)
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_image()
+        else:
+            super().keyPressEvent(event)
 
     #ascii filter button functionality
-    def ascii_act(self):    
-        if self.cam_thread.latest_frame is not None:
+    def ascii_act(self):
+        current = self.get_current_source_frame()
+        if current is not None:
             try:
-                current = self.cam_thread.latest_frame
                 small_frame = cv2.resize(current, (120, 50))
                 cv2.imwrite("capture.png", small_frame)
                 selfie = AsciiArt.from_image("capture.png")
@@ -241,6 +327,7 @@ class MainWindow (QMainWindow):
                 self.camlabel.setText("Error applying ASCII filter!")
                 self.camlabel.setStyleSheet("background-color: #121212; color: red; font-weight: bold; font-size: 20px;")
                 self.camlabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                return
         print("ASCII filter applied!")
         #selenoum automation
         if os.path.exists("capture.png"):
@@ -258,15 +345,28 @@ class MainWindow (QMainWindow):
              self.msg = False
              self.camlabel.setStyleSheet("background-color: #121212; color: white")
              self.camlabel.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        
+             self.refresh_display()
+
+    def mouseDoubleClickEvent(self, event):
+        # double click cam label to drop the uploaded/pasted image and go back to live cam
+        if self.using_upload:
+            self.using_upload = False
+            self.uploaded_frame = None
+            print("Resumed live camera view.")
+
     #vintage filter button functionality
     def vintage_act(self):
         if self.current_mode == "normal":
             self.current_mode = "vintage"
-            print("Live Vintage filter applied!")
+            print("Vintage filter applied!")
         else:
             self.current_mode = "normal"
-            print("Returned to Live Normal view!")
+            print("Returned to Normal view!")
+        # agar upload/paste wali image active hai to live feed usko refresh nahi karega,
+        # isliye yaha explicitly redraw karo
+        if self.using_upload:
+            self.refresh_display()
+
     def closeEvent(self, event):
         self.cam_thread.stop()
         event.accept()
