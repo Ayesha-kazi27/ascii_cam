@@ -102,6 +102,10 @@ class MainWindow (QMainWindow):
         }
         """)
         upload_button.clicked.connect(self.upload_act)
+
+        #ye doosra row heart button ke right side (upload button ke baad) rakhega naye filters
+        layoutlvl3b = QHBoxLayout()
+        layoutlvl2b.addLayout(layoutlvl3b)
         
         #ascii wala filter ka button
         ascii = QPushButton('ASCII')
@@ -145,7 +149,7 @@ class MainWindow (QMainWindow):
 
         #braille filter ka button
         braille = QPushButton('Braille')
-        layoutlvl3.addWidget(braille)
+        layoutlvl3b.addWidget(braille)
         braille.setFixedSize(70, 70)
         braille.setStyleSheet("""
         QPushButton {
@@ -163,6 +167,46 @@ class MainWindow (QMainWindow):
         """)
         braille.clicked.connect(self.braille_act)
 
+        #dreamy filter ka button
+        dreamy = QPushButton('Dreamy')
+        layoutlvl3b.addWidget(dreamy)
+        dreamy.setFixedSize(70, 70)
+        dreamy.setStyleSheet("""
+        QPushButton {
+            border-radius: 30px; 
+            background-color: #03C03C;
+            border: 2px solid #00FF00;
+            color: black;
+        }
+        QPushButton:hover {
+            background-color: #3b4b33;
+        }
+        QPushButton:pressed {
+            background-color: #00FF00;
+        }
+        """)
+        dreamy.clicked.connect(self.dreamy_act)
+
+        #threshold (b&w) filter ka button
+        threshold = QPushButton('sketchy')
+        layoutlvl3b.addWidget(threshold)
+        threshold.setFixedSize(70, 70)
+        threshold.setStyleSheet("""
+        QPushButton {
+            border-radius: 30px; 
+            background-color: #03C03C;
+            border: 2px solid #00FF00;
+            color: black;
+        }
+        QPushButton:hover {
+            background-color: #3b4b33;
+        }
+        QPushButton:pressed {
+            background-color: #00FF00;
+        }
+        """)
+        threshold.clicked.connect(self.sketchy_act)
+
         #here activate the thread
         self.cam_thread = Camera()
         self.cam_thread.frame_ready.connect(self.update_camera_view)
@@ -170,6 +214,14 @@ class MainWindow (QMainWindow):
 
         # focus chahiye taaki Ctrl+V key events window ko mile
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        # registry of toggle-able "live" filters (self.current_mode -> frame_bgr -> frame_bgr)
+        # naya continuous filter add karna ho to bas yaha ek entry daal do
+        self.live_filters = {
+            "vintage": self.apply_vintage,
+            "dreamy": self.apply_dreamy,
+            "threshold": self.apply_threshold,
+        }
 
     # ---------- helpers (reused by camera feed, upload, paste, save) ----------
 
@@ -180,6 +232,20 @@ class MainWindow (QMainWindow):
         sepia_floats = mh.colors.rgb2sepia(contiguous_rgb)
         sepia_uint8 = np.clip(sepia_floats, 0, 255).astype(np.uint8)
         return cv2.cvtColor(sepia_uint8, cv2.COLOR_RGB2BGR)
+
+    def apply_dreamy(self, frame_bgr):
+        """soft glow effect - blend a brightened gaussian blur back over the original"""
+        blurred = cv2.GaussianBlur(frame_bgr, (21, 21), 0)
+        blurred = cv2.convertScaleAbs(blurred, alpha=1.2, beta=10)
+        return cv2.addWeighted(frame_bgr, 0.6, blurred, 0.4, 0)
+
+    def apply_threshold(self, frame_bgr):
+        """black & white threshold using mahotas (image_gray > 125)"""
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        contiguous_rgb = np.ascontiguousarray(rgb)
+        gray = mh.colors.rgb2gray(contiguous_rgb)
+        bw = (gray > 125).astype(np.uint8) * 255
+        return cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
 
     def display_frame(self, frame_bgr):
         """show a bgr numpy frame on camlabel"""
@@ -205,11 +271,11 @@ class MainWindow (QMainWindow):
             return
         if self.using_upload and self.uploaded_frame is not None:
             frame = self.uploaded_frame.copy()
-            if self.current_mode == "vintage":
+            if self.current_mode in self.live_filters:
                 try:
-                    frame = self.apply_vintage(frame)
+                    frame = self.live_filters[self.current_mode](frame)
                 except Exception as e:
-                    print("Vintage on uploaded image error:", e)
+                    print(f"{self.current_mode} on uploaded image error:", e)
             self.display_frame(frame)
 
     def get_current_source_frame(self):
@@ -240,13 +306,13 @@ class MainWindow (QMainWindow):
         # jab upload/paste wali image active hai, live cam feed ko ignore karo
         if self.msg or self.using_upload:
             return
-        if self.current_mode == "vintage" and self.cam_thread.latest_frame is not None:
+        if self.current_mode in self.live_filters and self.cam_thread.latest_frame is not None:
             try:
-                frame = self.apply_vintage(self.cam_thread.latest_frame.copy())
+                frame = self.live_filters[self.current_mode](self.cam_thread.latest_frame.copy())
                 self.display_frame(frame)
                 return
             except Exception as e:
-                print("Live vintage calculation error:", e)
+                print(f"Live {self.current_mode} calculation error:", e)
         scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
             self.camlabel.width(), 
             self.camlabel.height(), 
@@ -262,9 +328,9 @@ class MainWindow (QMainWindow):
             try:
                 filename = f"capture_{int(time.time())}.png"
 
-                if self.current_mode == "vintage":
-                    frame_to_save = self.apply_vintage(frame_to_save)
-                    print(f"Applying vintage filter")
+                if self.current_mode in self.live_filters:
+                    frame_to_save = self.live_filters[self.current_mode](frame_to_save)
+                    print(f"Applying {self.current_mode} filter")
 
                 cv2.imwrite(filename, frame_to_save)
 
@@ -336,7 +402,7 @@ class MainWindow (QMainWindow):
                 selfie = AsciiArt.from_image("capture.png")
                 selfie.to_html_file("ascii_selfie.html", columns=200, width_ratio=2)
                 self.camlabel.clear()
-                self.camlabel.setText("Your ASCII selfie is saved as 'ascii_selfie.html'!!!")
+                self.camlabel.setText("Your ASCII selfie is saved as 'ascii_selfie.html'!!!\n\n(Click anywhere to resume)")
                 self.camlabel.setStyleSheet("background-color: #121212; color: #00FF00; font-weight: bold; font-size: 20px;")
                 self.camlabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.msg = True
@@ -370,7 +436,7 @@ class MainWindow (QMainWindow):
                 pil_img = Image.fromarray(rgb)
                 self.generate_braille_html(pil_img, "braille_selfie.html", new_width=120)
                 self.camlabel.clear()
-                self.camlabel.setText("Your Braille art is saved as 'braille_selfie.html'!!!")
+                self.camlabel.setText("Your Braille art is saved as 'braille_selfie.html'!!!\n\n(Click anywhere to resume)")
                 self.camlabel.setStyleSheet("background-color: #121212; color: #00FF00; font-weight: bold; font-size: 20px;")
                 self.camlabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.msg = True
@@ -511,18 +577,31 @@ class MainWindow (QMainWindow):
             self.uploaded_frame = None
             print("Resumed live camera view.")
 
-    #vintage filter button functionality
-    def vintage_act(self):
-        if self.current_mode == "normal":
-            self.current_mode = "vintage"
-            print("Vintage filter applied!")
-        else:
+    #shared toggle for any "live" (continuous) filter - clicking the same
+    #filter again turns it off; clicking a different one switches to it
+    def toggle_live_filter(self, mode_name):
+        if self.current_mode == mode_name:
             self.current_mode = "normal"
             print("Returned to Normal view!")
+        else:
+            self.current_mode = mode_name
+            print(f"{mode_name.capitalize()} filter applied!")
         # agar upload/paste wali image active hai to live feed usko refresh nahi karega,
         # isliye yaha explicitly redraw karo
         if self.using_upload:
             self.refresh_display()
+
+    #vintage filter button functionality
+    def vintage_act(self):
+        self.toggle_live_filter("vintage")
+
+    #dreamy filter button functionality
+    def dreamy_act(self):
+        self.toggle_live_filter("dreamy")
+
+    #sketchy (b&w) filter button functionality
+    def sketchy_act(self):
+        self.toggle_live_filter("sketchy")
 
     def closeEvent(self, event):
         self.cam_thread.stop()
