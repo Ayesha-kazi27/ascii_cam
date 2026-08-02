@@ -1,0 +1,12 @@
+# Virtual Environment
+env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+
+# Capture Files (Images)
+capture_*
+*.png
+*.jpg
+*.jpeg
