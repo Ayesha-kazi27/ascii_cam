@@ -2,7 +2,7 @@ from PySide6.QtWidgets import *
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtGui import QImage, QPixmap, QKeySequence
 from heartbutton import HeartButton
-import cv2, sys, os, time
+import cv2, os, time, threading
 from ascii_magic import AsciiArt
 from pathlib import Path
 from selenium import webdriver
@@ -16,27 +16,52 @@ class Camera(QThread):
     def __init__(self):
         super().__init__()
         self.running = True
-        self.current_mode = "normal"
         self.latest_frame = None  # init before run() so it exists even before first frame
+        # filter_func: callable(frame_bgr) -> frame_bgr, set by MainWindow.toggle_live_filter.
+        # doing the filter math HERE (worker thread) instead of in the GUI slot is what
+        # keeps the UI thread free to handle clicks/paints - that's the main fix for lag.
+        self.filter_func = None
+        self._pending = False  # True while GUI hasn't finished painting the last frame yet
     def run(self):
         cam = cv2.VideoCapture(0)
+        cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # kam buffer = kam latency
         while self.running:
-            _,frame = cam.read()
-            if not _:
+            ok, frame = cam.read()
+            if not ok:
                 continue
-            self.latest_frame = frame.copy()
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h,w,ch = rgb_frame.shape
+            self.latest_frame = frame.copy()  # raw frame - filters/save/upload isi pe kaam karte hai
+
+            if self._pending:
+                # GUI abhi pichla frame paint kar rahi hai - is frame ko skip karo.
+                # agar hum yaha bhi emit karte rehte to Qt ki event queue backlog ho jaati
+                # (frames jama hote jaate) aur app dheere dheere aur lag karne lagta.
+                continue
+
+            display_frame = frame
+            if self.filter_func is not None:
+                try:
+                    display_frame = self.filter_func(frame)
+                except Exception as e:
+                    print("Live filter error:", e)
+                    display_frame = frame
+
+            rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            contiguous_rgb = np.ascontiguousarray(rgb_frame)
+            h, w, ch = contiguous_rgb.shape
             bytes_per_line = ch * w
             qt_image = QImage(
-                rgb_frame.data, 
+                contiguous_rgb.data, 
                 w, 
                 h, 
                 bytes_per_line, 
                 QImage.Format.Format_RGB888
             )
+            self._pending = True
             self.frame_ready.emit(qt_image.copy())
         cam.release()
+    def frame_delivered(self):
+        """called by the GUI slot once it's done with a frame - releases the backpressure"""
+        self._pending = False
     def stop(self):
         self.running = False
         self.wait()
@@ -80,10 +105,94 @@ class MainWindow (QMainWindow):
         layoutlvl2b.addWidget(click_button)
         click_button.clicked.connect(self.click_act)
 
+        #ye doosra row heart button ke right side rakhega naye filters + upload
+        layoutlvl3b = QHBoxLayout()
+        layoutlvl2b.addLayout(layoutlvl3b)
+        
+        #ascii wala filter ka button
+        ascii = QPushButton('ASCII')
+        layoutlvl3.addWidget(ascii)
+        ascii.setFixedSize(50, 50)
+        ascii.setStyleSheet("""
+        QPushButton {
+            border-radius: 25px; 
+            background-color: #03C03C;
+            border: 2px solid #00FF00;
+            color: black;
+        }
+        QPushButton:hover {
+            background-color: #3b4b33;
+        }
+        QPushButton:pressed {
+            background-color: #00FF00;
+        }
+        """)
+        ascii.clicked.connect(self.ascii_act)
+        
+        #vintage filter ka apply  yaha
+        vintage = QPushButton('vintage')
+        layoutlvl3.addWidget(vintage)
+        vintage.setFixedSize(50, 50)
+        vintage.setStyleSheet("""
+        QPushButton {
+            border-radius: 25px; 
+            background-color: #03C03C;
+            border: 2px solid #00FF00;
+            color: black;
+        }
+        QPushButton:hover {
+            background-color: #3b4b33;
+        }
+        QPushButton:pressed {
+            background-color: #00FF00;
+        }
+        """)
+        vintage.clicked.connect(self.vintage_act)
+
+        #braille filter ka button
+        braille = QPushButton('Braille')
+        layoutlvl3b.addWidget(braille)
+        braille.setFixedSize(50, 50)
+        braille.setStyleSheet("""
+        QPushButton {
+            border-radius: 25px; 
+            background-color: #03C03C;
+            border: 2px solid #00FF00;
+            color: black;
+        }
+        QPushButton:hover {
+            background-color: #3b4b33;
+        }
+        QPushButton:pressed {
+            background-color: #00FF00;
+        }
+        """)
+        braille.clicked.connect(self.braille_act)
+
+        #dreamy filter ka button
+        dreamy = QPushButton('Dreamy')
+        layoutlvl3b.addWidget(dreamy)
+        dreamy.setFixedSize(50, 50)
+        dreamy.setStyleSheet("""
+        QPushButton {
+            border-radius: 25px; 
+            background-color: #03C03C;
+            border: 2px solid #00FF00;
+            color: black;
+        }
+        QPushButton:hover {
+            background-color: #3b4b33;
+        }
+        QPushButton:pressed {
+            background-color: #00FF00;
+        }
+        """)
+        dreamy.clicked.connect(self.dreamy_act)
+
         #img to upload so that u can apply filters to it
         upload_button = QPushButton('Upload')
-        layoutlvl2b.addWidget(upload_button)
-        upload_button.setFixedSize(80, 80)
+        layoutlvl3b.addWidget(upload_button)
+        upload_button.setFixedSize(80, 40)
         upload_button.setStyleSheet("""
         QPushButton {
             border-radius: 20px; 
@@ -103,17 +212,13 @@ class MainWindow (QMainWindow):
         """)
         upload_button.clicked.connect(self.upload_act)
 
-        #ye doosra row heart button ke right side (upload button ke baad) rakhega naye filters
-        layoutlvl3b = QHBoxLayout()
-        layoutlvl2b.addLayout(layoutlvl3b)
-        
-        #ascii wala filter ka button
-        ascii = QPushButton('ASCII')
-        layoutlvl3.addWidget(ascii)
-        ascii.setFixedSize(70, 70)
-        ascii.setStyleSheet("""
+        #sketchy (b&w) filter ka button
+        sketchy = QPushButton('Sketchy')
+        layoutlvl3.addWidget(sketchy)
+        sketchy.setFixedSize(50, 50)
+        sketchy.setStyleSheet("""
         QPushButton {
-            border-radius: 30px; 
+            border-radius: 25px; 
             background-color: #03C03C;
             border: 2px solid #00FF00;
             color: black;
@@ -125,87 +230,7 @@ class MainWindow (QMainWindow):
             background-color: #00FF00;
         }
         """)
-        ascii.clicked.connect(self.ascii_act)
-        
-        #vintage filter ka apply  yaha
-        vintage = QPushButton('vintage')
-        layoutlvl3.addWidget(vintage)
-        vintage.setFixedSize(70, 70)
-        vintage.setStyleSheet("""
-        QPushButton {
-            border-radius: 30px; 
-            background-color: #03C03C;
-            border: 2px solid #00FF00;
-            color: black;
-        }
-        QPushButton:hover {
-            background-color: #3b4b33;
-        }
-        QPushButton:pressed {
-            background-color: #00FF00;
-        }
-        """)
-        vintage.clicked.connect(self.vintage_act)
-
-        #braille filter ka button
-        braille = QPushButton('Braille')
-        layoutlvl3b.addWidget(braille)
-        braille.setFixedSize(70, 70)
-        braille.setStyleSheet("""
-        QPushButton {
-            border-radius: 30px; 
-            background-color: #03C03C;
-            border: 2px solid #00FF00;
-            color: black;
-        }
-        QPushButton:hover {
-            background-color: #3b4b33;
-        }
-        QPushButton:pressed {
-            background-color: #00FF00;
-        }
-        """)
-        braille.clicked.connect(self.braille_act)
-
-        #dreamy filter ka button
-        dreamy = QPushButton('Dreamy')
-        layoutlvl3b.addWidget(dreamy)
-        dreamy.setFixedSize(70, 70)
-        dreamy.setStyleSheet("""
-        QPushButton {
-            border-radius: 30px; 
-            background-color: #03C03C;
-            border: 2px solid #00FF00;
-            color: black;
-        }
-        QPushButton:hover {
-            background-color: #3b4b33;
-        }
-        QPushButton:pressed {
-            background-color: #00FF00;
-        }
-        """)
-        dreamy.clicked.connect(self.dreamy_act)
-
-        #threshold (b&w) filter ka button
-        threshold = QPushButton('sketchy')
-        layoutlvl3b.addWidget(threshold)
-        threshold.setFixedSize(70, 70)
-        threshold.setStyleSheet("""
-        QPushButton {
-            border-radius: 30px; 
-            background-color: #03C03C;
-            border: 2px solid #00FF00;
-            color: black;
-        }
-        QPushButton:hover {
-            background-color: #3b4b33;
-        }
-        QPushButton:pressed {
-            background-color: #00FF00;
-        }
-        """)
-        threshold.clicked.connect(self.sketchy_act)
+        sketchy.clicked.connect(self.sketchy_act)
 
         #here activate the thread
         self.cam_thread = Camera()
@@ -220,7 +245,7 @@ class MainWindow (QMainWindow):
         self.live_filters = {
             "vintage": self.apply_vintage,
             "dreamy": self.apply_dreamy,
-            "threshold": self.apply_threshold,
+            "sketchy": self.apply_sketchy,
         }
 
     # ---------- helpers (reused by camera feed, upload, paste, save) ----------
@@ -239,7 +264,7 @@ class MainWindow (QMainWindow):
         blurred = cv2.convertScaleAbs(blurred, alpha=1.2, beta=10)
         return cv2.addWeighted(frame_bgr, 0.6, blurred, 0.4, 0)
 
-    def apply_threshold(self, frame_bgr):
+    def apply_sketchy(self, frame_bgr):
         """black & white threshold using mahotas (image_gray > 125)"""
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         contiguous_rgb = np.ascontiguousarray(rgb)
@@ -299,20 +324,31 @@ class MainWindow (QMainWindow):
         bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
         return np.ascontiguousarray(bgr)
 
+    def open_in_browser(self, file_url):
+        """opens a saved file via selenium WITHOUT blocking the GUI thread.
+        webdriver.Chrome() + time.sleep(5) used to run straight in the button's
+        click handler, which froze the whole window for several seconds every
+        single time - running it on a plain background thread fixes that."""
+        def worker():
+            try:
+                driver = webdriver.Chrome()
+                driver.get(file_url)
+                time.sleep(5)
+                driver.quit()
+            except Exception as e:
+                print("Error opening in browser:", e)
+        threading.Thread(target=worker, daemon=True).start()
+
     # ---------------------------------------------------------------------
 
     @Slot(QImage)
     def update_camera_view(self, qt_image):
+        # is se Camera thread ko pata chal jaata hai ki GUI ne frame le liya,
+        # taaki wo agla frame emit kar sake (backpressure release)
+        self.cam_thread.frame_delivered()
         # jab upload/paste wali image active hai, live cam feed ko ignore karo
         if self.msg or self.using_upload:
             return
-        if self.current_mode in self.live_filters and self.cam_thread.latest_frame is not None:
-            try:
-                frame = self.live_filters[self.current_mode](self.cam_thread.latest_frame.copy())
-                self.display_frame(frame)
-                return
-            except Exception as e:
-                print(f"Live {self.current_mode} calculation error:", e)
         scaled_pixmap = QPixmap.fromImage(qt_image).scaled(
             self.camlabel.width(), 
             self.camlabel.height(), 
@@ -340,12 +376,8 @@ class MainWindow (QMainWindow):
                 self.camlabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.msg = True
                 print(f"Successfully saved image snapshot asset to: {filename}")
-                driver = webdriver.Chrome()
-                QApplication.processEvents()
                 filepath = Path(filename).resolve().as_uri()
-                driver.get(filepath)
-                time.sleep(5)
-                driver.quit()
+                self.open_in_browser(filepath)
                 
             except Exception as e:
                 print("Error saving image snapshot:", e)
@@ -419,13 +451,9 @@ class MainWindow (QMainWindow):
         #selenoum automation
         if os.path.exists("capture.png"):
             os.remove("capture.png")
-        QApplication.processEvents()
         file_url = Path("ascii_selfie.html").resolve().as_uri()
         print(f"Selenium opening: {file_url}")
-        driver = webdriver.Chrome()
-        driver.get(file_url)
-        time.sleep(5)
-        driver.quit()
+        self.open_in_browser(file_url)
 
     #braille filter button functionality
     def braille_act(self):
@@ -449,13 +477,9 @@ class MainWindow (QMainWindow):
                 return
         print("Braille filter applied!")
         #selenoum automation
-        QApplication.processEvents()
         file_url = Path("braille_selfie.html").resolve().as_uri()
         print(f"Selenium opening: {file_url}")
-        driver = webdriver.Chrome()
-        driver.get(file_url)
-        time.sleep(5)
-        driver.quit()
+        self.open_in_browser(file_url)
 
     def generate_braille_html(self, img, output_html_path, new_width=100):
         """img: a PIL Image (already RGB) -> colored braille art saved as html"""
@@ -586,6 +610,9 @@ class MainWindow (QMainWindow):
         else:
             self.current_mode = mode_name
             print(f"{mode_name.capitalize()} filter applied!")
+        # camera thread ko batao ki ab konsa filter (agar koi hai) apply karna hai -
+        # taaki wo filtering apne thread pe kare, GUI thread ko block kiye bina
+        self.cam_thread.filter_func = self.live_filters.get(self.current_mode)
         # agar upload/paste wali image active hai to live feed usko refresh nahi karega,
         # isliye yaha explicitly redraw karo
         if self.using_upload:
