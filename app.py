@@ -23,7 +23,7 @@ class Camera(QThread):
         self.filter_func = None
         self._pending = False  # True while GUI hasn't finished painting the last frame yet
     def run(self):
-        cam = cv2.VideoCapture(0)
+        cam = cv2.VideoCapture(0) 
         cam.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # kam buffer = kam latency
         while self.running:
             ok, frame = cam.read()
